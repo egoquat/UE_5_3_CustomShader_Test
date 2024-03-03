@@ -1,0 +1,212 @@
+﻿
+#pragma once
+
+#define RT_PAYLOAD_TYPE_VFX 1
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/RayTracing/RayTracingCommon.ush"
+#include "/Engine/Private/RayTracing/RayTracingHitGroupCommon.ush"
+
+#define EPSILON 0.01f
+
+RWTexture2D<float4> outTex;
+RaytracingAccelerationStructure TLAS;
+uint2 OutputTextureRes;
+float3 PositionWorldView;
+float4x4 PositionToTranslatedWorldView;
+float FarClipView;
+float3 RollPitchYawView;
+float3 RollPitchYawCamera;
+float3 UpVecView;
+float3 RightVecView;
+float3 ForwardVecView;
+
+struct FCusotmRayPayload : FIntersectionPayload
+{
+    float3 TranslatedWorldPosition;
+    float3 WorldNormal;
+    void SetPosition(float3 position)
+    {
+        TranslatedWorldPosition = position;
+    }
+};
+
+float3x3 RotationMatrix(float3 vAxis, float angle)
+{
+    if (abs(angle) <= EPSILON) return float3x3(1,0,0,0,1,0,0,0,1);
+
+    angle = radians(angle);
+    float2 vSinCos;
+#if COMPILER_GLSL || COMPILER_GLSL_ES3_1
+    vSinCos.x = sin(angle);
+    vSinCos.y = cos(angle);
+#else
+    sincos(angle, vSinCos.x, vSinCos.y);
+#endif
+    
+    const float c = vSinCos.y;
+    const float s = vSinCos.x;
+    const float t = 1.0 - c;
+    const float x = vAxis.x;
+    const float y = vAxis.y;
+    const float z = vAxis.z;
+    
+    return float3x3(t * x * x + c,		t * x * y - s * z,	t * x * z + s * y,
+                    t * x * y + s * z,	t * y * y + c,		t * y * z - s * x,
+                    t * x * z - s * y,	t * y * z + s * x,	t * z * z + c);
+}
+
+float3 RotationAxis(float3 vec, float3 vAxis, float angle)
+{
+    if (abs(angle) <= EPSILON) return vec;
+
+    angle = radians(angle);
+    float2 vSinCos;
+#if COMPILER_GLSL || COMPILER_GLSL_ES3_1
+    vSinCos.x = sin(angle);
+    vSinCos.y = cos(angle);
+#else
+    sincos(angle, vSinCos.x, vSinCos.y);
+#endif
+    
+    const float c = vSinCos.y;
+    const float s = vSinCos.x;
+    const float t = 1.0 - c;
+    const float x = vAxis.x;
+    const float y = vAxis.y;
+    const float z = vAxis.z;
+    
+    float3x3 mat = float3x3(t * x * x + c,		t * x * y - s * z,	t * x * z + s * y,
+                            t * x * y + s * z,	t * y * y + c,		t * y * z - s * x,
+                            t * x * z - s * y,	t * y * z + s * x,	t * z * z + c);
+    vec = mul(mat, vec);
+    return vec;
+}
+
+void GetViewportWorldPositionCustom(uint2 coordV, uint2 resTex, float DeviceZ, out float3 OutTranslatedWorldPosition, out float3 OutCameraDirection)
+{
+    float2 resView = View.ViewSizeAndInvSize.xy;
+    float2 coord = float2((float)coordV.x * (resView.x/(float)resTex.x), (float)coordV.y * (resView.y/(float)resTex.y));
+    float4 TranslatedWorldPosition = mul(float4(coord + 0.5f, DeviceZ, 1), View.SVPositionToTranslatedWorld);
+    TranslatedWorldPosition.xyz /= TranslatedWorldPosition.w;
+    OutTranslatedWorldPosition = TranslatedWorldPosition.xyz;
+    OutCameraDirection = normalize(TranslatedWorldPosition.xyz - View.TranslatedWorldCameraOrigin);
+}
+
+void GetViewportWorldPositionCustomTest(uint2 coordV, uint2 resTex, float DeviceZ, out float3 OutTranslatedWorldPosition, out float3 OutCameraDirection)
+{
+    float2 resView = View.ViewSizeAndInvSize.xy;
+    float2 coord = float2((float)coordV.x * (resView.x/(float)resTex.x), (float)coordV.y * (resView.y/(float)resTex.y));
+    float4 TranslatedWorldPosition = mul(float4(coord + 0.5f, DeviceZ, 1), PositionToTranslatedWorldView);
+    TranslatedWorldPosition.xyz /= TranslatedWorldPosition.w;
+    OutTranslatedWorldPosition = TranslatedWorldPosition.xyz;
+    OutCameraDirection = normalize(TranslatedWorldPosition.xyz - PositionWorldView);
+}
+
+float3x3 CreateRotationMatrixYawPitchRoll(float yaw, float pitch, float roll)
+{
+    float cosYaw = cos(yaw);
+    float sinYaw = sin(yaw);
+    float cosPitch = cos(pitch);
+    float sinPitch = sin(pitch);
+    float cosRoll = cos(roll);
+    float sinRoll = sin(roll);
+
+    float3x3 rotationMatrix;
+
+    rotationMatrix[0] = float3(cosYaw * cosRoll + sinYaw * sinPitch * sinRoll, cosRoll * sinYaw * sinPitch - cosYaw * sinRoll, cosYaw * sinPitch);
+    rotationMatrix[1] = float3(cosPitch * sinRoll, cosPitch * cosRoll, -sinPitch);
+    rotationMatrix[2] = float3(cosYaw * sinPitch * sinRoll - cosRoll * sinYaw, cosYaw * cosRoll * sinPitch + sinYaw * sinRoll, cosYaw * cosPitch);
+
+    return rotationMatrix;
+}
+
+// y p r sum test, wrong direction. y p r separate.
+// https://chat.openai.com/c/db402100-4646-4f94-8ec0-8aa16faf9349
+float3 RotateVectorYawPitchRoll(float3 vec, float yaw, float pitch, float roll)
+{
+    if (abs(yaw) < EPSILON && abs(pitch) < EPSILON && abs(roll) < EPSILON) return vec;
+    float3x3 rotationMatrix = CreateRotationMatrixYawPitchRoll(radians(pitch), radians(roll), radians(yaw));
+    vec = mul(rotationMatrix, vec);
+    return vec;
+}
+
+RAY_TRACING_ENTRY_RAYGEN(RayTraceTestRGS)
+{
+    // reconstruct camera direction with a small (far) device z
+    uint2 PixelCoord = DispatchRaysIndex().xy + View.ViewRectMin.xy;
+    float3 WorldPosition;
+    float3 CameraDirection;
+
+    //ReconstructTranslatedWorldPositionAndCameraDirectionFromDeviceZ(PixelCoord, 0.1f, WorldPosition, CameraDirection);
+    GetViewportWorldPositionCustom(PixelCoord, OutputTextureRes, 0.1f, WorldPosition, CameraDirection);
+    WorldPosition = PositionWorldView - View.RelativeWorldCameraOrigin;
+    float3 euler = RollPitchYawCamera - RollPitchYawView;
+    //CameraDirection = RotateVectorYawPitchRoll(CameraDirection, euler.z, -euler.y, euler.x);
+    //float3 euler = float3(90, 0, 0);
+    if (abs(euler.x) > EPSILON)
+    {
+        CameraDirection = RotationAxis(CameraDirection, ForwardVecView, euler.x);
+    }
+    
+    if (abs(euler.y) > EPSILON)
+    {
+        CameraDirection = RotationAxis(CameraDirection, RightVecView, euler.y);
+    }
+
+    if (abs(euler.z) > EPSILON)
+    {
+        CameraDirection = RotationAxis(CameraDirection, UpVecView, euler.z);
+    }
+    
+    // setup ray, simply shoot a long distance
+    RayDesc Ray;
+    Ray.Origin = WorldPosition;
+    //Ray.Origin = PositionWorldView;
+    //Ray.Origin = View.TranslatedWorldCameraOrigin;
+    //CameraDirection = RotateVectorYaw(CameraDirection, 20.0f);
+    //CameraDirection = RotateVectorPitch(CameraDirection, 10.0f);
+    Ray.Direction = CameraDirection;
+    Ray.TMin = 0.0f;
+    Ray.TMax = FarClipView;
+ 
+    uint RayFlags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
+ 
+    FVFXTracePayload Payload = (FVFXTracePayload) 0;
+    	
+    TraceRay(
+        TLAS,   // AccelerationStructure
+        RayFlags,
+        RAY_TRACING_MASK_OPAQUE,
+        RAY_TRACING_SHADER_SLOT_MATERIAL, // RayContributionToHitGroupIndex, defined by UE4
+        RAY_TRACING_NUM_SHADER_SLOTS,     // MultiplierForGeometryContributionToShaderIndex, defined by UE4
+        0,      // MissShaderIndex
+        Ray,    // RayDesc
+        Payload // Payload
+    );
+ 
+    if (Payload.IsHit() && Payload.HitT <= FarClipView)
+    {
+        //outTex[PixelCoord] = float4(Payload.TranslatedWorldPosition,1);
+        float rt = clamp(Payload.HitT/FarClipView, 0, 1);
+        float ch = 1.0f/3.0f;
+        float g=1.0f - saturate(rt*7),r=saturate((rt-ch)*3),b=saturate((rt-(ch*2))*3);
+        outTex[PixelCoord] = float4(r,g,b,0.5);
+    }
+    else
+    {
+        outTex[PixelCoord] = float4(0,0,0,0.5);
+    }
+}
+
+RAY_TRACING_ENTRY_CLOSEST_HIT(RayTraceTestCHS, FVFXTracePayload, payload, BuiltInTriangleIntersectionAttributes, attribs)
+{
+    //float3 wPos = TranslatedWorldRayOrigin() + WorldRayDirection() * RayTCurrent();
+    //payload.TranslatedWorldPosition = TranslatedWorldRayOrigin() + WorldRayDirection() * RayTCurrent();
+    payload.HitT = RayTCurrent();
+}
+
+RAY_TRACING_ENTRY_MISS(RayTraceTestMS, FVFXTracePayload, payload)
+{
+    payload.SetMiss();
+}

@@ -1,0 +1,115 @@
+﻿
+#pragma once
+
+#define RT_PAYLOAD_TYPE_VFX 1
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/RayTracing/RayTracingCommon.ush"
+#include "/Engine/Private/RayTracing/RayTracingHitGroupCommon.ush"
+ 
+#define MaxRayClipCustomRay 20000.0f  
+
+RWTexture2D<float4> outTex;
+RaytracingAccelerationStructure TLAS;
+uint2 OutputTextureRes;
+
+struct FCusotmRayPayload : FIntersectionPayload
+{
+    float3 TranslatedWorldPosition;
+    float3 WorldNormal;
+    void SetPosition(float3 position)
+    {
+        TranslatedWorldPosition = position;
+    }
+};
+
+float3 RotateVectorY(float3 dir, float angle) {
+    if (abs(angle) <= 0.01f) return dir;
+    
+    // Convert the angle from degrees to radians
+    angle = radians(angle);
+
+    // Calculate the sine and cosine of the angle
+    float sinAngle = sin(angle);
+    float cosAngle = cos(angle);
+
+    // Create the rotation matrix around the Y-axis
+    float3x3 rotationMatrix = float3x3(
+        cosAngle, sinAngle, 0,
+        -sinAngle, cosAngle, 0, 
+        0, 0, 1
+    );
+
+    // Rotate the vector using the rotation matrix
+    return mul(rotationMatrix, dir);
+}
+
+// ReconstructTranslatedWorldPositionAndCameraDirectionFromDeviceZ ref
+void GetViewportWorldPositionCustom(uint2 coordV, uint2 resTex, float DeviceZ, out float3 OutTranslatedWorldPosition, out float3 OutCameraDirection)
+{
+    float2 resView = View.ViewSizeAndInvSize.xy;
+    float2 coord = float2((float)coordV.x * (resView.x/(float)resTex.x), (float)coordV.y * (resView.y/(float)resTex.y));
+    float4 TranslatedWorldPosition = mul(float4(coord + 0.5f, DeviceZ, 1), View.SVPositionToTranslatedWorld);
+    TranslatedWorldPosition.xyz /= TranslatedWorldPosition.w;
+    OutTranslatedWorldPosition = TranslatedWorldPosition.xyz;
+    OutCameraDirection = normalize(TranslatedWorldPosition.xyz - View.TranslatedWorldCameraOrigin);
+}
+
+RAY_TRACING_ENTRY_RAYGEN(RayTraceTestRGS)
+{
+    // reconstruct camera direction with a small (far) device z
+    uint2 PixelCoord = DispatchRaysIndex().xy + View.ViewRectMin.xy;
+    float3 WorldPosition;
+    float3 CameraDirection;
+    //ReconstructTranslatedWorldPositionAndCameraDirectionFromDeviceZ(PixelCoord, 0.1f, WorldPosition, CameraDirection);
+    GetViewportWorldPositionCustom(PixelCoord, OutputTextureRes, 0.1f, WorldPosition, CameraDirection);
+
+    //WorldPosition = float3(5660.840929, 9180.353912, 4953.588296);
+    
+    // setup ray, simply shoot a long distance
+    RayDesc Ray;
+    Ray.Origin = WorldPosition;
+    Ray.Direction = RotateVectorY(CameraDirection, 0.0f);
+    Ray.TMin = 0.0f;
+    Ray.TMax = MaxRayClipCustomRay;
+ 
+    uint RayFlags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
+ 
+    FVFXTracePayload Payload = (FVFXTracePayload) 0;
+	
+    TraceRay(
+        TLAS,   // AccelerationStructure
+        RayFlags,
+        RAY_TRACING_MASK_OPAQUE,
+        RAY_TRACING_SHADER_SLOT_MATERIAL, // RayContributionToHitGroupIndex, defined by UE4
+        RAY_TRACING_NUM_SHADER_SLOTS,     // MultiplierForGeometryContributionToShaderIndex, defined by UE4
+        0,      // MissShaderIndex
+        Ray,    // RayDesc
+        Payload // Payload
+    );
+ 
+    if (Payload.IsHit() && Payload.HitT <= MaxRayClipCustomRay)
+    {
+        //outTex[PixelCoord] = float4(Payload.TranslatedWorldPosition,1);
+        float rt = clamp(Payload.HitT/MaxRayClipCustomRay, 0, 1);
+        float ch = 1.0f/3.0f;
+        float b=saturate(rt*3),r=saturate((rt-ch)*3),g=saturate((rt-(ch*2))*3);
+        outTex[PixelCoord] = float4(r,g,b,1);
+    }
+    else
+    {
+        outTex[PixelCoord] = float4(0,0,0,1);
+    }
+}
+
+RAY_TRACING_ENTRY_CLOSEST_HIT(RayTraceTestCHS, FVFXTracePayload, payload, BuiltInTriangleIntersectionAttributes, attribs)
+{
+    //float3 wPos = TranslatedWorldRayOrigin() + WorldRayDirection() * RayTCurrent();
+    //payload.TranslatedWorldPosition = TranslatedWorldRayOrigin() + WorldRayDirection() * RayTCurrent();
+    payload.HitT = RayTCurrent();
+}
+
+RAY_TRACING_ENTRY_MISS(RayTraceTestMS, FVFXTracePayload, payload)
+{
+    payload.SetMiss();
+}
