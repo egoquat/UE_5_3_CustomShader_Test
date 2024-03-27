@@ -93,7 +93,7 @@ RAY_TRACING_ENTRY_RAYGEN(RayTraceTestRGS)
         //outTex[PixelCoord] = float4(Payload.TranslatedWorldPosition,1);
         float rt = clamp(Payload.HitT/MaxRayClipCustomRay, 0, 1);
         float ch = 1.0f/3.0f;
-        float b=saturate(rt*3),r=saturate((rt-ch)*3),g=saturate((rt-(ch*2))*3);
+        float r=saturate(rt*11),g=saturate((rt-ch)*3),b=saturate((rt-(ch*2))*3);
         outTex[PixelCoord] = float4(r,g,b,1);
     }
     else
