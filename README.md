@@ -1,1 +1,2 @@
-Unreal Engine 5.3 Custom Global Shader Test. Only work supported RayTracing GPU.
+Unreal Engine 5.3 Custom Global RT Shader Test. 
+Private test purpose.
